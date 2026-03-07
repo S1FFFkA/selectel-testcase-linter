@@ -1,0 +1,13 @@
+rules:
+  lowercase_start: false
+  english_only: false
+  no_specials_or_emoji: false
+  sensitive_data: true
+
+sensitive:
+  keywords:
+    - merchant_pin
+  regex:
+    - "(?i)otp[_-]?code"
+
+
