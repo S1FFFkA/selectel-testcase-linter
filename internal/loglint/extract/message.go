@@ -6,29 +6,35 @@ import (
 	"go/token"
 	"go/types"
 
-	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/model"
 	"golang.org/x/tools/go/analysis"
 )
 
-func GetMessage(pass *analysis.Pass, call *ast.CallExpr) (model.LogMessage, bool) {
+type Message struct {
+	Expr       ast.Expr
+	IsFormat   bool
+	StaticText string
+	IsConst    bool
+}
+
+func GetMessage(pass *analysis.Pass, call *ast.CallExpr) (Message, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
-		return model.LogMessage{}, false
+		return Message{}, false
 	}
 
 	fnObj, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
 	if !ok {
-		return model.LogMessage{}, false
+		return Message{}, false
 	}
 
 	msgPos, isFormat, ok := messagePosition(pass, sel, fnObj)
 	if !ok || msgPos >= len(call.Args) {
-		return model.LogMessage{}, false
+		return Message{}, false
 	}
 
 	msgExpr := call.Args[msgPos]
 	if message, isConst := constString(pass, msgExpr); isConst {
-		return model.LogMessage{
+		return Message{
 			Expr:       msgExpr,
 			IsFormat:   isFormat,
 			StaticText: message,
@@ -36,7 +42,7 @@ func GetMessage(pass *analysis.Pass, call *ast.CallExpr) (model.LogMessage, bool
 		}, true
 	}
 
-	return model.LogMessage{
+	return Message{
 		Expr:       msgExpr,
 		IsFormat:   isFormat,
 		StaticText: staticPrefixString(pass, msgExpr),

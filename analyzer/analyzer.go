@@ -5,10 +5,8 @@ import (
 
 	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/config"
 	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/extract"
-	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/model"
-	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/rules/sensitive"
-	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/rules/style"
-	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/ruleset"
+	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/rules"
+	go_translate "github.com/dinhcanh303/go_translate"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
@@ -30,43 +28,33 @@ func NewAnalyzerWithSettings(settings any) (*analysis.Analyzer, error) {
 		return nil, err
 	}
 
-	var configPath string
 	an := &analysis.Analyzer{
-		Name:     "loglint",
+		Name:     "logslinter",
 		Doc:      "checks log messages in slog and zap for style and data-safety rules",
 		Requires: []*analysis.Analyzer{inspect.Analyzer},
 		Run: func(pass *analysis.Pass) (interface{}, error) {
-			activeCfg, err := resolveConfig(baseCfg, configPath)
-			if err != nil {
-				return nil, err
-			}
-			return runAnalysis(pass, activeCfg)
+			return runAnalysis(pass, baseCfg)
 		},
 	}
-	an.Flags.StringVar(&configPath, "config", "", "path to YAML config file")
 	return an, nil
 }
 
-func resolveConfig(base config.Config, configPath string) (config.Config, error) {
-	if configPath == "" {
-		return base, nil
-	}
-	return config.LoadFromYAMLFile(configPath)
-}
-
 func runAnalysis(pass *analysis.Pass, cfg config.Config) (interface{}, error) {
-	matcher, err := sensitive.NewMatcher(cfg.Sensitive.Keywords, cfg.Sensitive.Regex)
+	matcher, err := rules.BuildSensitiveMatcher(cfg.Sensitive.Keywords, cfg.Sensitive.Regex)
 	if err != nil {
 		return nil, err
 	}
+	translator, _ := go_translate.NewTranslator(&go_translate.TranslateOptions{
+		Provider: go_translate.ProviderGoogle,
+	})
 
-	rules := []ruleset.Rule{
-		style.NewLowercaseRule(),
-		style.NewEnglishRule(),
-		style.NewNoSpecialsRule(),
-		sensitive.NewDataRule(matcher),
+	checks := []rules.Rule{
+		rules.NewLowercaseRule(),
+		rules.NewEnglishRule(),
+		rules.NewNoSpecialsRule(),
+		rules.NewSensitiveRule(),
 	}
-	ctx := ruleset.Context{Config: cfg}
+	ctx := rules.Context{Config: cfg, Matcher: matcher, Translator: translator}
 
 	ins := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	ins.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(node ast.Node) {
@@ -75,13 +63,13 @@ func runAnalysis(pass *analysis.Pass, cfg config.Config) (interface{}, error) {
 		if !ok {
 			return
 		}
-		applyRules(pass, msg, rules, ctx)
+		applyRules(pass, msg, checks, ctx)
 	})
 	return nil, nil
 }
 
-func applyRules(pass *analysis.Pass, msg model.LogMessage, rules []ruleset.Rule, ctx ruleset.Context) {
-	for _, rule := range rules {
+func applyRules(pass *analysis.Pass, msg extract.Message, checks []rules.Rule, ctx rules.Context) {
+	for _, rule := range checks {
 		rule.Check(pass, msg, ctx)
 	}
 }

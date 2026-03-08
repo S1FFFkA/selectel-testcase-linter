@@ -1,0 +1,379 @@
+package rules
+
+import (
+	"context"
+	"go/ast"
+	"go/token"
+	"log"
+	"regexp"
+	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/config"
+	"github.com/S1FFFkA/selectel-testcase-linter/internal/loglint/extract"
+	go_translate "github.com/dinhcanh303/go_translate"
+	"golang.org/x/tools/go/analysis"
+)
+
+type Context struct {
+	Config     config.Config
+	Matcher    SensitiveMatcher
+	Translator go_translate.Translator
+}
+
+type Rule interface {
+	Check(pass *analysis.Pass, msg extract.Message, ctx Context)
+}
+
+type LowercaseRule struct{}
+type EnglishRule struct{}
+type NoSpecialsRule struct{}
+type SensitiveRule struct{}
+
+func NewLowercaseRule() LowercaseRule { return LowercaseRule{} }
+func NewEnglishRule() EnglishRule     { return EnglishRule{} }
+func NewNoSpecialsRule() NoSpecialsRule {
+	return NoSpecialsRule{}
+}
+func NewSensitiveRule() SensitiveRule { return SensitiveRule{} }
+
+func (r LowercaseRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
+	if !ctx.Config.Rules.LowercaseStart || msg.StaticText == "" {
+		return
+	}
+	checkStartsWithLowercase(pass, msg.Expr, msg.StaticText, ctx.Config.Autofix.LowercaseStart)
+}
+
+func (r EnglishRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
+	if !ctx.Config.Rules.EnglishOnly || msg.StaticText == "" {
+		return
+	}
+	checkEnglishOnlyWithFix(pass, msg.Expr, msg.StaticText, ctx.Config.Autofix.EnglishOnly, ctx.Translator)
+}
+
+func (r NoSpecialsRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
+	if !ctx.Config.Rules.NoSpecials || msg.StaticText == "" {
+		return
+	}
+	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, msg.IsFormat, ctx.Config.Autofix.NoSpecials)
+}
+
+func (r SensitiveRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
+	if !ctx.Config.Rules.SensitiveData {
+		return
+	}
+	if msg.IsConst {
+		checkSensitiveStatic(pass, msg.Expr, msg.StaticText, ctx.Matcher, ctx.Config.Autofix.SensitiveData)
+		return
+	}
+	checkSensitiveDynamic(pass, msg.Expr, ctx.Matcher)
+}
+
+func BuildSensitiveMatcher(keywords []string, regexPatterns []string) (SensitiveMatcher, error) {
+	m := SensitiveMatcher{
+		keywords: normalizeKeywords(keywords),
+		regexps:  make([]*regexp.Regexp, 0, len(regexPatterns)),
+	}
+	for _, raw := range regexPatterns {
+		pattern := strings.TrimSpace(raw)
+		if pattern == "" {
+			continue
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return SensitiveMatcher{}, err
+		}
+		m.regexps = append(m.regexps, re)
+	}
+	return m, nil
+}
+
+type SensitiveMatcher struct {
+	keywords []string
+	regexps  []*regexp.Regexp
+}
+
+func checkStartsWithLowercase(pass *analysis.Pass, expr ast.Expr, message string, withSuggestedFix bool) {
+	if startsWithLowercase(message) {
+		return
+	}
+	r, _ := utf8.DecodeRuneInString(message)
+
+	diagnostic := analysis.Diagnostic{
+		Pos:     expr.Pos(),
+		End:     expr.End(),
+		Message: "log message should start with a lowercase letter",
+	}
+	if withSuggestedFix && unicode.IsLetter(r) {
+		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			lowered := string(unicode.ToLower(r)) + message[utf8.RuneLen(r):]
+			diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
+				Message: "lowercase the first letter",
+				TextEdits: []analysis.TextEdit{{
+					Pos:     lit.Pos(),
+					End:     lit.End(),
+					NewText: []byte(strconv.Quote(lowered)),
+				}},
+			}}
+		}
+	}
+	pass.Report(diagnostic)
+}
+
+func checkEnglishOnlyWithFix(pass *analysis.Pass, expr ast.Expr, message string, withSuggestedFix bool, translator go_translate.Translator) {
+	if isEnglishOnly(message) {
+		return
+	}
+	diagnostic := analysis.Diagnostic{
+		Pos:     expr.Pos(),
+		End:     expr.End(),
+		Message: "log message should be in English only",
+	}
+	if withSuggestedFix && translator != nil {
+		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			translated := translateToEnglish(message, translator)
+			if translated != "" && translated != message {
+				diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
+					Message: "translate to English",
+					TextEdits: []analysis.TextEdit{{
+						Pos:     lit.Pos(),
+						End:     lit.End(),
+						NewText: []byte(strconv.Quote(translated)),
+					}},
+				}}
+			}
+		}
+	}
+	pass.Report(diagnostic)
+}
+
+func checkNoSpecialsOrEmoji(pass *analysis.Pass, expr ast.Expr, message string, allowFormatVerb bool, withSuggestedFix bool) {
+	diagnostic, found := findNoSpecialsOrEmojiViolation(expr, message, allowFormatVerb)
+	if !found {
+		return
+	}
+	if withSuggestedFix {
+		applyNoSpecialsOrEmojiFix(&diagnostic, expr, message, allowFormatVerb)
+	}
+	pass.Report(diagnostic)
+}
+
+func findNoSpecialsOrEmojiViolation(expr ast.Expr, message string, allowFormatVerb bool) (analysis.Diagnostic, bool) {
+	if !hasDisallowedRune(message, allowFormatVerb) {
+		return analysis.Diagnostic{}, false
+	}
+	return analysis.Diagnostic{
+		Pos:     expr.Pos(),
+		End:     expr.End(),
+		Message: "log message should not contain special characters or emoji",
+	}, true
+}
+
+func applyNoSpecialsOrEmojiFix(diagnostic *analysis.Diagnostic, expr ast.Expr, message string, allowFormatVerb bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return
+	}
+	sanitized := sanitizeMessage(message, allowFormatVerb)
+	if sanitized == message {
+		return
+	}
+	diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
+		Message: "remove special characters",
+		TextEdits: []analysis.TextEdit{{
+			Pos:     lit.Pos(),
+			End:     lit.End(),
+			NewText: []byte(strconv.Quote(sanitized)),
+		}},
+	}}
+}
+
+func hasDisallowedRune(message string, allowFormatVerb bool) bool {
+	runes := []rune(message)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
+			continue
+		}
+		if r == ':' || r == '=' || r == '_' {
+			continue
+		}
+		if allowFormatVerb && r == '%' && i+1 < len(runes) {
+			i++
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func sanitizeMessage(message string, allowFormatVerb bool) string {
+	var b strings.Builder
+	lastSpace := false
+	runes := []rune(message)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == ':' || r == '=' || r == '_' {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if allowFormatVerb && r == '%' && i+1 < len(runes) {
+			b.WriteRune(r)
+			i++
+			b.WriteRune(runes[i])
+			lastSpace = false
+			continue
+		}
+		if unicode.IsSpace(r) && !lastSpace {
+			b.WriteRune(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func checkSensitiveStatic(pass *analysis.Pass, expr ast.Expr, message string, matcher SensitiveMatcher, withSuggestedFix bool) {
+	if !containsSensitiveKeyWithSeparator(strings.ToLower(message), matcher) {
+		return
+	}
+	diagnostic := analysis.Diagnostic{
+		Pos:     expr.Pos(),
+		End:     expr.End(),
+		Message: "log message may expose sensitive data",
+	}
+	if withSuggestedFix {
+		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
+				Message: "replace with neutral message",
+				TextEdits: []analysis.TextEdit{{
+					Pos:     lit.Pos(),
+					End:     lit.End(),
+					NewText: []byte(strconv.Quote("sensitive data redacted")),
+				}},
+			}}
+		}
+	}
+	pass.Report(diagnostic)
+}
+
+func checkSensitiveDynamic(pass *analysis.Pass, expr ast.Expr, matcher SensitiveMatcher) {
+	if containsSensitiveReference(pass, expr, matcher) {
+		pass.Reportf(expr.Pos(), "log message may expose sensitive data")
+	}
+}
+
+func containsSensitiveReference(pass *analysis.Pass, expr ast.Expr, matcher SensitiveMatcher) bool {
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if node == nil || found {
+			return false
+		}
+		switch n := node.(type) {
+		case *ast.BasicLit:
+			if n.Kind != token.STRING {
+				return true
+			}
+			text, err := strconv.Unquote(n.Value)
+			if err != nil {
+				return true
+			}
+			if containsSensitiveKeyWithSeparator(strings.ToLower(text), matcher) {
+				found = true
+				return false
+			}
+		case *ast.Ident:
+			if isSensitiveWord(n.Name, matcher) {
+				found = true
+				return false
+			}
+		case *ast.SelectorExpr:
+			if isSensitiveWord(n.Sel.Name, matcher) {
+				found = true
+				return false
+			}
+		case *ast.CallExpr:
+			if extract.LooksLikeSprintf(pass, n) {
+				for _, arg := range n.Args {
+					if containsSensitiveReference(pass, arg, matcher) {
+						found = true
+						return false
+					}
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func containsSensitiveKeyWithSeparator(s string, matcher SensitiveMatcher) bool {
+	for _, word := range matcher.keywords {
+		if strings.Contains(s, word+":") || strings.Contains(s, word+"=") {
+			return true
+		}
+	}
+	for _, re := range matcher.regexps {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSensitiveWord(name string, matcher SensitiveMatcher) bool {
+	lower := strings.ToLower(strings.ReplaceAll(name, "-", "_"))
+	for _, word := range matcher.keywords {
+		if lower == word || strings.Contains(lower, word) {
+			return true
+		}
+	}
+	for _, re := range matcher.regexps {
+		if re.MatchString(lower) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeKeywords(keywords []string) []string {
+	out := make([]string, 0, len(keywords))
+	for _, word := range keywords {
+		w := strings.ToLower(strings.TrimSpace(word))
+		if w != "" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func translateToEnglish(text string, translator go_translate.Translator) string {
+	result, err := translator.TranslateText(context.Background(), []string{text}, "en")
+	if err != nil {
+		log.Println("translate error:", err)
+		return ""
+	}
+	if len(result) == 0 {
+		return ""
+	}
+	return result[0]
+}
+
+func startsWithLowercase(message string) bool {
+	r, _ := utf8.DecodeRuneInString(message)
+	if r == utf8.RuneError || r == 0 {
+		return true
+	}
+	return unicode.IsLower(r)
+}
+
+func isEnglishOnly(message string) bool {
+	for _, r := range message {
+		if unicode.IsLetter(r) && !unicode.In(r, unicode.Latin) {
+			return false
+		}
+	}
+	return true
+}

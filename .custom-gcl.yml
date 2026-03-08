@@ -1,0 +1,6 @@
+version: v2.4.0
+
+plugins:
+  - module: github.com/S1FFFkA/selectel-testcase-linter
+    import: github.com/S1FFFkA/selectel-testcase-linter/plugin
+    version: v0.1.0

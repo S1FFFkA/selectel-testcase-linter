@@ -11,9 +11,7 @@ import (
 )
 
 func TestAnalyzer(t *testing.T) {
-	// analysistest internally invokes "go". In some IDE setups on Windows,
-	// PATH may point to a different Go patch version than the one used to
-	// build the test binary, which causes version mismatch failures.
+
 	goroot := runtime.GOROOT()
 	t.Setenv("GOROOT", goroot)
 	t.Setenv("GOTOOLCHAIN", "local")
@@ -21,6 +19,10 @@ func TestAnalyzer(t *testing.T) {
 	goBin := filepath.Join(goroot, "bin")
 	t.Setenv("PATH", goBin+string(os.PathListSeparator)+currentPath)
 
-	testdata := analysistest.TestData()
-	analysistest.Run(t, testdata, analyzer.Analyzer, "a")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("cannot get working directory: %v", err)
+	}
+	testdata := filepath.Join(filepath.Dir(wd), "testdata")
+	analysistest.Run(t, testdata, analyzer.Analyzer, "loglinttest/src/p")
 }
