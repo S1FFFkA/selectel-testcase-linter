@@ -44,21 +44,24 @@ func (r LowercaseRule) Check(pass *analysis.Pass, msg extract.Message, ctx Conte
 	if !ctx.Config.Rules.LowercaseStart || msg.StaticText == "" {
 		return
 	}
-	checkStartsWithLowercase(pass, msg.Expr, msg.StaticText, ctx.Config.Autofix.LowercaseStart, ctx.UnifiedFix)
+	withFix := ctx.Config.Autofix.LowercaseStart && shouldAttachFixForLowercase(msg, ctx)
+	checkStartsWithLowercase(pass, msg.Expr, msg.StaticText, withFix, ctx.UnifiedFix)
 }
 
 func (r EnglishRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
 	if !ctx.Config.Rules.EnglishOnly || msg.StaticText == "" {
 		return
 	}
-	checkEnglishOnlyWithFix(pass, msg.Expr, msg.StaticText, ctx.Config.Autofix.EnglishOnly, ctx.Translator, ctx.UnifiedFix)
+	withFix := ctx.Config.Autofix.EnglishOnly && shouldAttachFixForEnglish(msg, ctx)
+	checkEnglishOnlyWithFix(pass, msg.Expr, msg.StaticText, withFix, ctx.Translator, ctx.UnifiedFix)
 }
 
 func (r NoSpecialsRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
 	if !ctx.Config.Rules.NoSpecials || msg.StaticText == "" {
 		return
 	}
-	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, msg.IsFormat, ctx.Config.Autofix.NoSpecials, ctx.UnifiedFix)
+	withFix := ctx.Config.Autofix.NoSpecials && shouldAttachFixForNoSpecials(msg, ctx)
+	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, msg.IsFormat, withFix, ctx.UnifiedFix)
 }
 
 func (r SensitiveRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
@@ -66,7 +69,8 @@ func (r SensitiveRule) Check(pass *analysis.Pass, msg extract.Message, ctx Conte
 		return
 	}
 	if msg.IsConst {
-		checkSensitiveStatic(pass, msg.Expr, msg.StaticText, ctx.Matcher, ctx.Config.Autofix.SensitiveData, ctx.UnifiedFix)
+		withFix := ctx.Config.Autofix.SensitiveData && shouldAttachFixForSensitive(msg, ctx)
+		checkSensitiveStatic(pass, msg.Expr, msg.StaticText, ctx.Matcher, withFix, ctx.UnifiedFix)
 		return
 	}
 	checkSensitiveDynamic(pass, msg.Expr, ctx.Matcher)
@@ -404,6 +408,43 @@ func BuildUnifiedLiteralFix(msg extract.Message, ctx Context) string {
 		return ""
 	}
 	return fixed
+}
+
+func shouldAttachFixForLowercase(msg extract.Message, ctx Context) bool {
+	if !ctx.Config.Rules.LowercaseStart {
+		return false
+	}
+	return !startsWithLowercase(msg.StaticText)
+}
+
+func shouldAttachFixForEnglish(msg extract.Message, ctx Context) bool {
+	if !ctx.Config.Rules.EnglishOnly {
+		return false
+	}
+	if shouldAttachFixForLowercase(msg, ctx) {
+		return false
+	}
+	return !isEnglishOnly(msg.StaticText)
+}
+
+func shouldAttachFixForNoSpecials(msg extract.Message, ctx Context) bool {
+	if !ctx.Config.Rules.NoSpecials {
+		return false
+	}
+	if shouldAttachFixForLowercase(msg, ctx) || shouldAttachFixForEnglish(msg, ctx) {
+		return false
+	}
+	return hasDisallowedRune(msg.StaticText, msg.IsFormat)
+}
+
+func shouldAttachFixForSensitive(msg extract.Message, ctx Context) bool {
+	if !ctx.Config.Rules.SensitiveData || !msg.IsConst {
+		return false
+	}
+	if shouldAttachFixForLowercase(msg, ctx) || shouldAttachFixForEnglish(msg, ctx) || shouldAttachFixForNoSpecials(msg, ctx) {
+		return false
+	}
+	return containsSensitiveKeyWithSeparator(strings.ToLower(msg.StaticText), ctx.Matcher)
 }
 
 func startsWithLowercase(message string) bool {
