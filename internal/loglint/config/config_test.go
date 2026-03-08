@@ -9,7 +9,7 @@ func TestApplyMap(t *testing.T) {
 			"english_only": false,
 		},
 		"sensitive": map[string]any{
-			"keywords": []any{"token", "client_secret"},
+			"keywords": []any{"token", "client_secret="},
 			"regex":    []any{"(?i)auth[_-]?key"},
 		},
 		"autofix": map[string]any{
@@ -71,7 +71,7 @@ func TestApplyMapWithLinterLikeSettings(t *testing.T) {
 	if !cfg.Rules.SensitiveData {
 		t.Fatalf("expected sensitive_data.state=true after apply")
 	}
-	if len(cfg.Sensitive.Keywords) != 3 || cfg.Sensitive.Keywords[0] != "password:" {
+	if len(cfg.Sensitive.Keywords) != 3 || cfg.Sensitive.Keywords[0] != "password" || cfg.Sensitive.Keywords[1] != "token" {
 		t.Fatalf("unexpected sensitive words: %#v", cfg.Sensitive.Keywords)
 	}
 	if cfg.Autofix.NoSpecials {

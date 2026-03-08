@@ -101,9 +101,8 @@ plugins:
         sensitive_data:
           state: true
           words:
-            - "password:"
-            - "password="
-            - "token:"
+            - "password"
+            - "token"
             - "merchant_pin"
       autofix:
         starts_with_lower: true
@@ -117,4 +116,4 @@ plugins:
 - Правила 1-3 применяются к строковым сообщениям, вычислимым как compile-time string constant.
 - Проверка чувствительных данных работает и для динамических выражений (`+`, `fmt.Sprintf`, идентификаторы с именами вроде `password`, `token`, `api_key`).
 - Добавлены `SuggestedFixes`: понижение регистра первой буквы, перевод неанглийского текста на английский (через `go_translate`), удаление спецсимволов в литералах, замена статического чувствительного сообщения на нейтральное.
-- Чтобы добавить своё "правило-слово" для sensitive, добавьте его в `rules.sensitive_data.words`.
+- Чтобы добавить своё "правило-слово" для sensitive, добавьте его в `rules.sensitive_data.words` (только слово, без `:` и `=`).

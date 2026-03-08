@@ -126,7 +126,7 @@ func applyMap(cfg *Config, raw map[string]any) error {
 				cfg.Rules.SensitiveData = v
 			}
 			if words, ok := firstStringSlice(sensitiveDataRaw, "words", "keywords"); ok {
-				cfg.Sensitive.Keywords = normalizeSlice(words)
+				cfg.Sensitive.Keywords = normalizeKeywordSlice(words)
 			}
 			if regex, ok := firstStringSlice(sensitiveDataRaw, "regex", "patterns"); ok {
 				cfg.Sensitive.Regex = normalizeSlice(regex)
@@ -136,7 +136,7 @@ func applyMap(cfg *Config, raw map[string]any) error {
 
 	if sensitiveRaw, ok := childMap(raw, "sensitive"); ok {
 		if v, ok := firstStringSlice(sensitiveRaw, "keywords", "words"); ok {
-			cfg.Sensitive.Keywords = normalizeSlice(v)
+			cfg.Sensitive.Keywords = normalizeKeywordSlice(v)
 		}
 		if v, ok := firstStringSlice(sensitiveRaw, "regex", "patterns"); ok {
 			cfg.Sensitive.Regex = normalizeSlice(v)
@@ -167,6 +167,18 @@ func normalizeSlice(v []string) []string {
 		trimmed := strings.TrimSpace(s)
 		if trimmed != "" {
 			out = append(out, strings.ToLower(trimmed))
+		}
+	}
+	return out
+}
+
+func normalizeKeywordSlice(v []string) []string {
+	out := make([]string, 0, len(v))
+	for _, s := range v {
+		trimmed := strings.TrimSpace(strings.ToLower(s))
+		trimmed = strings.TrimRight(trimmed, ":=")
+		if trimmed != "" {
+			out = append(out, trimmed)
 		}
 	}
 	return out
