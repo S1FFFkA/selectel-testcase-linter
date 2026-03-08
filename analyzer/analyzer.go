@@ -69,6 +69,7 @@ func runAnalysis(pass *analysis.Pass, cfg config.Config) (interface{}, error) {
 }
 
 func applyRules(pass *analysis.Pass, msg extract.Message, checks []rules.Rule, ctx rules.Context) {
+	ctx.UnifiedFix = rules.BuildUnifiedLiteralFix(msg, ctx)
 	for _, rule := range checks {
 		rule.Check(pass, msg, ctx)
 	}

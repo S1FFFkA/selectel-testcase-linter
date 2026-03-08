@@ -21,6 +21,7 @@ type Context struct {
 	Config     config.Config
 	Matcher    SensitiveMatcher
 	Translator go_translate.Translator
+	UnifiedFix string
 }
 
 type Rule interface {
@@ -43,21 +44,21 @@ func (r LowercaseRule) Check(pass *analysis.Pass, msg extract.Message, ctx Conte
 	if !ctx.Config.Rules.LowercaseStart || msg.StaticText == "" {
 		return
 	}
-	checkStartsWithLowercase(pass, msg.Expr, msg.StaticText, ctx.Config.Autofix.LowercaseStart)
+	checkStartsWithLowercase(pass, msg.Expr, msg.StaticText, ctx.Config.Autofix.LowercaseStart, ctx.UnifiedFix)
 }
 
 func (r EnglishRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
 	if !ctx.Config.Rules.EnglishOnly || msg.StaticText == "" {
 		return
 	}
-	checkEnglishOnlyWithFix(pass, msg.Expr, msg.StaticText, ctx.Config.Autofix.EnglishOnly, ctx.Translator)
+	checkEnglishOnlyWithFix(pass, msg.Expr, msg.StaticText, ctx.Config.Autofix.EnglishOnly, ctx.Translator, ctx.UnifiedFix)
 }
 
 func (r NoSpecialsRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
 	if !ctx.Config.Rules.NoSpecials || msg.StaticText == "" {
 		return
 	}
-	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, msg.IsFormat, ctx.Config.Autofix.NoSpecials)
+	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, msg.IsFormat, ctx.Config.Autofix.NoSpecials, ctx.UnifiedFix)
 }
 
 func (r SensitiveRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
@@ -65,7 +66,7 @@ func (r SensitiveRule) Check(pass *analysis.Pass, msg extract.Message, ctx Conte
 		return
 	}
 	if msg.IsConst {
-		checkSensitiveStatic(pass, msg.Expr, msg.StaticText, ctx.Matcher, ctx.Config.Autofix.SensitiveData)
+		checkSensitiveStatic(pass, msg.Expr, msg.StaticText, ctx.Matcher, ctx.Config.Autofix.SensitiveData, ctx.UnifiedFix)
 		return
 	}
 	checkSensitiveDynamic(pass, msg.Expr, ctx.Matcher)
@@ -95,7 +96,7 @@ type SensitiveMatcher struct {
 	regexps  []*regexp.Regexp
 }
 
-func checkStartsWithLowercase(pass *analysis.Pass, expr ast.Expr, message string, withSuggestedFix bool) {
+func checkStartsWithLowercase(pass *analysis.Pass, expr ast.Expr, message string, withSuggestedFix bool, unifiedFix string) {
 	if startsWithLowercase(message) {
 		return
 	}
@@ -108,13 +109,16 @@ func checkStartsWithLowercase(pass *analysis.Pass, expr ast.Expr, message string
 	}
 	if withSuggestedFix && unicode.IsLetter(r) {
 		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-			lowered := string(unicode.ToLower(r)) + message[utf8.RuneLen(r):]
+			replacement := string(unicode.ToLower(r)) + message[utf8.RuneLen(r):]
+			if unifiedFix != "" {
+				replacement = unifiedFix
+			}
 			diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
 				Message: "lowercase the first letter",
 				TextEdits: []analysis.TextEdit{{
 					Pos:     lit.Pos(),
 					End:     lit.End(),
-					NewText: []byte(strconv.Quote(lowered)),
+					NewText: []byte(strconv.Quote(replacement)),
 				}},
 			}}
 		}
@@ -122,7 +126,7 @@ func checkStartsWithLowercase(pass *analysis.Pass, expr ast.Expr, message string
 	pass.Report(diagnostic)
 }
 
-func checkEnglishOnlyWithFix(pass *analysis.Pass, expr ast.Expr, message string, withSuggestedFix bool, translator go_translate.Translator) {
+func checkEnglishOnlyWithFix(pass *analysis.Pass, expr ast.Expr, message string, withSuggestedFix bool, translator go_translate.Translator, unifiedFix string) {
 	if isEnglishOnly(message) {
 		return
 	}
@@ -134,6 +138,9 @@ func checkEnglishOnlyWithFix(pass *analysis.Pass, expr ast.Expr, message string,
 	if withSuggestedFix && translator != nil {
 		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
 			translated := translateToEnglish(message, translator)
+			if unifiedFix != "" {
+				translated = unifiedFix
+			}
 			if translated != "" && translated != message {
 				diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
 					Message: "translate to English",
@@ -149,13 +156,13 @@ func checkEnglishOnlyWithFix(pass *analysis.Pass, expr ast.Expr, message string,
 	pass.Report(diagnostic)
 }
 
-func checkNoSpecialsOrEmoji(pass *analysis.Pass, expr ast.Expr, message string, allowFormatVerb bool, withSuggestedFix bool) {
+func checkNoSpecialsOrEmoji(pass *analysis.Pass, expr ast.Expr, message string, allowFormatVerb bool, withSuggestedFix bool, unifiedFix string) {
 	diagnostic, found := findNoSpecialsOrEmojiViolation(expr, message, allowFormatVerb)
 	if !found {
 		return
 	}
 	if withSuggestedFix {
-		applyNoSpecialsOrEmojiFix(&diagnostic, expr, message, allowFormatVerb)
+		applyNoSpecialsOrEmojiFix(&diagnostic, expr, message, allowFormatVerb, unifiedFix)
 	}
 	pass.Report(diagnostic)
 }
@@ -171,12 +178,15 @@ func findNoSpecialsOrEmojiViolation(expr ast.Expr, message string, allowFormatVe
 	}, true
 }
 
-func applyNoSpecialsOrEmojiFix(diagnostic *analysis.Diagnostic, expr ast.Expr, message string, allowFormatVerb bool) {
+func applyNoSpecialsOrEmojiFix(diagnostic *analysis.Diagnostic, expr ast.Expr, message string, allowFormatVerb bool, unifiedFix string) {
 	lit, ok := expr.(*ast.BasicLit)
 	if !ok || lit.Kind != token.STRING {
 		return
 	}
 	sanitized := sanitizeMessage(message, allowFormatVerb)
+	if unifiedFix != "" {
+		sanitized = unifiedFix
+	}
 	if sanitized == message {
 		return
 	}
@@ -235,7 +245,7 @@ func sanitizeMessage(message string, allowFormatVerb bool) string {
 	return strings.TrimSpace(b.String())
 }
 
-func checkSensitiveStatic(pass *analysis.Pass, expr ast.Expr, message string, matcher SensitiveMatcher, withSuggestedFix bool) {
+func checkSensitiveStatic(pass *analysis.Pass, expr ast.Expr, message string, matcher SensitiveMatcher, withSuggestedFix bool, unifiedFix string) {
 	if !containsSensitiveKeyWithSeparator(strings.ToLower(message), matcher) {
 		return
 	}
@@ -246,12 +256,16 @@ func checkSensitiveStatic(pass *analysis.Pass, expr ast.Expr, message string, ma
 	}
 	if withSuggestedFix {
 		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			replacement := "sensitive data redacted"
+			if unifiedFix != "" {
+				replacement = unifiedFix
+			}
 			diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
 				Message: "replace with neutral message",
 				TextEdits: []analysis.TextEdit{{
 					Pos:     lit.Pos(),
 					End:     lit.End(),
-					NewText: []byte(strconv.Quote("sensitive data redacted")),
+					NewText: []byte(strconv.Quote(replacement)),
 				}},
 			}}
 		}
@@ -359,6 +373,37 @@ func translateToEnglish(text string, translator go_translate.Translator) string 
 		return ""
 	}
 	return result[0]
+}
+
+func BuildUnifiedLiteralFix(msg extract.Message, ctx Context) string {
+	lit, ok := msg.Expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING || msg.StaticText == "" {
+		return ""
+	}
+	original := msg.StaticText
+	fixed := original
+
+	if ctx.Config.Autofix.EnglishOnly && ctx.Config.Rules.EnglishOnly && !isEnglishOnly(fixed) && ctx.Translator != nil {
+		if translated := translateToEnglish(fixed, ctx.Translator); translated != "" {
+			fixed = translated
+		}
+	}
+	if ctx.Config.Autofix.SensitiveData && ctx.Config.Rules.SensitiveData && containsSensitiveKeyWithSeparator(strings.ToLower(fixed), ctx.Matcher) {
+		fixed = "sensitive data redacted"
+	}
+	if ctx.Config.Autofix.NoSpecials && ctx.Config.Rules.NoSpecials && hasDisallowedRune(fixed, msg.IsFormat) {
+		fixed = sanitizeMessage(fixed, msg.IsFormat)
+	}
+	if ctx.Config.Autofix.LowercaseStart && ctx.Config.Rules.LowercaseStart && !startsWithLowercase(fixed) {
+		r, _ := utf8.DecodeRuneInString(fixed)
+		if unicode.IsLetter(r) {
+			fixed = string(unicode.ToLower(r)) + fixed[utf8.RuneLen(r):]
+		}
+	}
+	if fixed == original {
+		return ""
+	}
+	return fixed
 }
 
 func startsWithLowercase(message string) bool {
