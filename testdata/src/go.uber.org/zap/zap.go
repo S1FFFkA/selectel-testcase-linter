@@ -34,3 +34,4 @@ func (s *SugaredLogger) Errorw(_ string, _ ...any)  {}
 func (s *SugaredLogger) DPanicw(_ string, _ ...any) {}
 func (s *SugaredLogger) Panicw(_ string, _ ...any)  {}
 func (s *SugaredLogger) Fatalw(_ string, _ ...any)  {}
+

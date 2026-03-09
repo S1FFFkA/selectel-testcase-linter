@@ -14,12 +14,12 @@ func slogCases(password string, token string) {
 	slog.Info("api_key=" + password)               // want "log message may expose sensitive data"
 	slog.Info("token: " + token)                   // want "log message may expose sensitive data"
 	slog.Info("server started")                    // ok
-	slog.Info("password: hidden")                  // want "log message may expose sensitive data"
-	slog.Info("token=123")                         // want "log message may expose sensitive data"
+	slog.Info("password: hidden")                  // want "log message should not contain special characters or emoji"
+	slog.Info("token=123")                         // want "log message should not contain special characters or emoji"
 	slog.Info("пароль получен 🚀")                  // want "log message should be in English only" "log message should not contain special characters or emoji"
 	slog.InfoContext(nil, "Connection failed!!!")  // want "log message should start with a lowercase letter" "log message should not contain special characters or emoji"
 	slog.Default().Warn("Something went wrong")    // want "log message should start with a lowercase letter"
-	slog.Info(fmt.Sprintf("token=%s", token))      // want "log message should not contain special characters or emoji" "log message may expose sensitive data"
+	slog.Info(fmt.Sprintf("token=%s", token))      // want "log message may expose sensitive data"
 }
 
 func zapCases(apiKey string, token string) {

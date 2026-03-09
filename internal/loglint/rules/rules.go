@@ -4,6 +4,7 @@ import (
 	"context"
 	"go/ast"
 	"go/token"
+	"go/types"
 	"log"
 	"regexp"
 	"strconv"
@@ -60,17 +61,17 @@ func (r NoSpecialsRule) Check(pass *analysis.Pass, msg extract.Message, ctx Cont
 	if !ctx.Config.Rules.NoSpecials || msg.StaticText == "" {
 		return
 	}
-	allowKVSeparators := containsSensitiveKeyWithSeparator(strings.ToLower(msg.StaticText), ctx.Matcher)
-	withFix := ctx.Config.Autofix.NoSpecials && shouldAttachFixForNoSpecials(msg, ctx)
-	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, msg.IsFormat, allowKVSeparators, withFix, ctx.UnifiedFix)
+	allowKVSeparators := isSensitiveDynamicMessage(pass, msg, ctx.Matcher)
+	allowFormatVerb := msg.IsFormat || isSprintfExpr(pass, msg.Expr)
+	withFix := ctx.Config.Autofix.NoSpecials && shouldAttachFixForNoSpecials(pass, msg, ctx)
+	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, allowFormatVerb, allowKVSeparators, withFix, ctx.UnifiedFix)
 }
 
 func (r SensitiveRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
 	if !ctx.Config.Rules.SensitiveData {
 		return
 	}
-	if msg.IsConst {
-		checkSensitiveStatic(pass, msg.Expr, msg.StaticText, ctx.Matcher)
+	if !isSensitiveDynamicMessage(pass, msg, ctx.Matcher) {
 		return
 	}
 	checkSensitiveDynamic(pass, msg.Expr, ctx.Matcher)
@@ -249,18 +250,6 @@ func sanitizeMessage(message string, allowFormatVerb bool, allowKVSeparators boo
 	return strings.TrimSpace(b.String())
 }
 
-func checkSensitiveStatic(pass *analysis.Pass, expr ast.Expr, message string, matcher SensitiveMatcher) {
-	if !containsSensitiveKeyWithSeparator(strings.ToLower(message), matcher) {
-		return
-	}
-	diagnostic := analysis.Diagnostic{
-		Pos:     expr.Pos(),
-		End:     expr.End(),
-		Message: "log message may expose sensitive data",
-	}
-	pass.Report(diagnostic)
-}
-
 func checkSensitiveDynamic(pass *analysis.Pass, expr ast.Expr, matcher SensitiveMatcher) {
 	if containsSensitiveReference(pass, expr, matcher) {
 		pass.Reportf(expr.Pos(), "log message may expose sensitive data")
@@ -376,7 +365,8 @@ func BuildUnifiedLiteralFix(msg extract.Message, ctx Context) string {
 			fixed = translated
 		}
 	}
-	allowKVSeparators := containsSensitiveKeyWithSeparator(strings.ToLower(fixed), ctx.Matcher)
+	// String literal is always treated as stable message (no sensitive mode for pure text).
+	allowKVSeparators := false
 	if ctx.Config.Autofix.NoSpecials && ctx.Config.Rules.NoSpecials && hasDisallowedRune(fixed, msg.IsFormat, allowKVSeparators) {
 		fixed = sanitizeMessage(fixed, msg.IsFormat, allowKVSeparators)
 	}
@@ -409,15 +399,56 @@ func shouldAttachFixForEnglish(msg extract.Message, ctx Context) bool {
 	return !isEnglishOnly(msg.StaticText)
 }
 
-func shouldAttachFixForNoSpecials(msg extract.Message, ctx Context) bool {
+func shouldAttachFixForNoSpecials(pass *analysis.Pass, msg extract.Message, ctx Context) bool {
 	if !ctx.Config.Rules.NoSpecials {
 		return false
 	}
 	if shouldAttachFixForLowercase(msg, ctx) || shouldAttachFixForEnglish(msg, ctx) {
 		return false
 	}
-	allowKVSeparators := containsSensitiveKeyWithSeparator(strings.ToLower(msg.StaticText), ctx.Matcher)
-	return hasDisallowedRune(msg.StaticText, msg.IsFormat, allowKVSeparators)
+	allowKVSeparators := isSensitiveDynamicMessage(pass, msg, ctx.Matcher)
+	allowFormatVerb := msg.IsFormat || isSprintfExpr(pass, msg.Expr)
+	return hasDisallowedRune(msg.StaticText, allowFormatVerb, allowKVSeparators)
+}
+
+func isSensitiveDynamicMessage(pass *analysis.Pass, msg extract.Message, matcher SensitiveMatcher) bool {
+	if msg.IsConst {
+		return false
+	}
+	return hasVariableReference(pass, msg.Expr) && containsSensitiveReference(pass, msg.Expr, matcher)
+}
+
+func hasVariableReference(pass *analysis.Pass, expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if node == nil || found {
+			return false
+		}
+		switch n := node.(type) {
+		case *ast.Ident:
+			if obj, ok := pass.TypesInfo.Uses[n]; ok {
+				if _, ok := obj.(*types.Var); ok {
+					found = true
+					return false
+				}
+			}
+		case *ast.SelectorExpr:
+			if sel := pass.TypesInfo.Selections[n]; sel != nil && sel.Kind() == types.FieldVal {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func isSprintfExpr(pass *analysis.Pass, expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	return extract.LooksLikeSprintf(pass, call)
 }
 
 func startsWithLowercase(message string) bool {
