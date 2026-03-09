@@ -40,5 +40,5 @@ func zapCases(apiKey string, token string) {
 
 func customSensitiveCases(merchantPin string, otpCode string) {
 	slog.Info("merchant_pin: " + merchantPin) // want "log message should not contain special characters or emoji"
-	slog.Info("otp code: " + otpCode)         // want "log message should not contain special characters or emoji"
+	slog.Info("otp code: " + otpCode)         // ok for dynamic: ':' is allowed
 }

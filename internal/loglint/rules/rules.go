@@ -61,7 +61,8 @@ func (r NoSpecialsRule) Check(pass *analysis.Pass, msg extract.Message, ctx Cont
 	if !ctx.Config.Rules.NoSpecials || msg.StaticText == "" {
 		return
 	}
-	allowKVSeparators := isSensitiveDynamicMessage(pass, msg, ctx.Matcher)
+	// For any dynamic message (not pure constant), ':' and '=' are allowed.
+	allowKVSeparators := !msg.IsConst
 	allowFormatVerb := msg.IsFormat || isSprintfExpr(pass, msg.Expr)
 	withFix := ctx.Config.Autofix.NoSpecials && shouldAttachFixForNoSpecials(pass, msg, ctx)
 	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, allowFormatVerb, allowKVSeparators, withFix, ctx.UnifiedFix)
