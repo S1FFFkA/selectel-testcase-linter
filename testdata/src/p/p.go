@@ -11,7 +11,7 @@ func slogCases(password string, token string) {
 	slog.Info("Starting server on port 8080")      // want "log message should start with a lowercase letter"
 	slog.Error("ошибка подключения к базе данных") // want "log message should be in English only"
 	slog.Warn("warning: something went wrong...")  // want "log message should not contain special characters or emoji"
-	slog.Info("api_key=" + password)               // want "log message may expose sensitive data"
+	slog.Info("api_key=" + password)               // want "log message may expose sensitive data" "log message should not contain special characters or emoji"
 	slog.Info("token: " + token)                   // want "log message may expose sensitive data"
 	slog.Info("server started")                    // ok
 	slog.Info("password: hidden")                  // want "log message should not contain special characters or emoji"
@@ -29,7 +29,7 @@ func zapCases(apiKey string, token string) {
 	logger.Info("Starting server")                             // want "log message should start with a lowercase letter"
 	logger.Error("connection failed!!!")                       // want "log message should not contain special characters or emoji"
 	logger.Warn("запуск сервера")                              // want "log message should be in English only"
-	logger.Debug("api_key=" + apiKey)                          // want "log message may expose sensitive data"
+	logger.Debug("api_key=" + apiKey)                          // want "log message may expose sensitive data" "log message should not contain special characters or emoji"
 	logger.Info("server started")                              // ok
 	sugar.Infof("Failed to connect: %s", token)                // want "log message should start with a lowercase letter" "log message should not contain special characters or emoji"
 	sugar.Infof("failed to connect: %s", token)                // want "log message should not contain special characters or emoji"

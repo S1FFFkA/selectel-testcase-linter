@@ -105,27 +105,30 @@ func checkStartsWithLowercase(pass *analysis.Pass, expr ast.Expr, message string
 	if startsWithLowercase(message) {
 		return
 	}
-	r, _ := utf8.DecodeRuneInString(message)
 
 	diagnostic := analysis.Diagnostic{
 		Pos:     expr.Pos(),
 		End:     expr.End(),
 		Message: "log message should start with a lowercase letter",
 	}
-	if withSuggestedFix && unicode.IsLetter(r) {
-		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-			replacement := string(unicode.ToLower(r)) + message[utf8.RuneLen(r):]
-			if unifiedFix != "" {
-				replacement = unifiedFix
+	if withSuggestedFix {
+		lit, literalText, ok := fixTargetStringLiteral(pass, expr)
+		if ok {
+			first, _ := utf8.DecodeRuneInString(literalText)
+			if unicode.IsLetter(first) {
+				replacement := string(unicode.ToLower(first)) + literalText[utf8.RuneLen(first):]
+				if unifiedFix != "" {
+					replacement = unifiedFix
+				}
+				diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
+					Message: "lowercase the first letter",
+					TextEdits: []analysis.TextEdit{{
+						Pos:     lit.Pos(),
+						End:     lit.End(),
+						NewText: []byte(strconv.Quote(replacement)),
+					}},
+				}}
 			}
-			diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
-				Message: "lowercase the first letter",
-				TextEdits: []analysis.TextEdit{{
-					Pos:     lit.Pos(),
-					End:     lit.End(),
-					NewText: []byte(strconv.Quote(replacement)),
-				}},
-			}}
 		}
 	}
 	pass.Report(diagnostic)
@@ -141,12 +144,13 @@ func checkEnglishOnlyWithFix(pass *analysis.Pass, expr ast.Expr, message string,
 		Message: "log message should be in English only",
 	}
 	if withSuggestedFix && translator != nil {
-		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-			translated := translateToEnglish(message, translator)
+		lit, literalText, ok := fixTargetStringLiteral(pass, expr)
+		if ok {
+			translated := translateToEnglish(literalText, translator)
 			if unifiedFix != "" {
 				translated = unifiedFix
 			}
-			if translated != "" && translated != message {
+			if translated != "" && translated != literalText {
 				diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
 					Message: "translate to English",
 					TextEdits: []analysis.TextEdit{{
@@ -184,15 +188,15 @@ func findNoSpecialsOrEmojiViolation(expr ast.Expr, message string, allowFormatVe
 }
 
 func applyNoSpecialsOrEmojiFix(diagnostic *analysis.Diagnostic, expr ast.Expr, message string, allowFormatVerb bool, allowKVSeparators bool, unifiedFix string) {
-	lit, ok := expr.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
+	lit, literalText, ok := fixTargetStringLiteral(nil, expr)
+	if !ok {
 		return
 	}
-	sanitized := sanitizeMessage(message, allowFormatVerb, allowKVSeparators)
+	sanitized := sanitizeMessage(literalText, allowFormatVerb, allowKVSeparators)
 	if unifiedFix != "" {
 		sanitized = unifiedFix
 	}
-	if sanitized == message {
+	if sanitized == literalText {
 		return
 	}
 	diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
@@ -212,7 +216,7 @@ func hasDisallowedRune(message string, allowFormatVerb bool, allowKVSeparators b
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
 			continue
 		}
-		if allowKVSeparators && (r == ':' || r == '=' || r == '_') {
+		if allowKVSeparators && (r == ':' || r == '=') {
 			continue
 		}
 		if allowFormatVerb && r == '%' && i+1 < len(runes) {
@@ -230,7 +234,7 @@ func sanitizeMessage(message string, allowFormatVerb bool, allowKVSeparators boo
 	runes := []rune(message)
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || (allowKVSeparators && (r == ':' || r == '=' || r == '_')) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || (allowKVSeparators && (r == ':' || r == '=')) {
 			b.WriteRune(r)
 			lastSpace = false
 			continue
@@ -316,8 +320,9 @@ func containsSensitiveKeyWithSeparator(s string, matcher SensitiveMatcher) bool 
 
 func isSensitiveWord(name string, matcher SensitiveMatcher) bool {
 	lower := strings.ToLower(strings.ReplaceAll(name, "-", "_"))
+	canonicalName := canonicalSensitiveToken(lower)
 	for _, word := range matcher.keywords {
-		if lower == word || strings.Contains(lower, word) {
+		if canonicalName == canonicalSensitiveToken(word) {
 			return true
 		}
 	}
@@ -327,6 +332,17 @@ func isSensitiveWord(name string, matcher SensitiveMatcher) bool {
 		}
 	}
 	return false
+}
+
+func canonicalSensitiveToken(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
 }
 
 func normalizeKeywords(keywords []string) []string {
@@ -352,12 +368,11 @@ func translateToEnglish(text string, translator go_translate.Translator) string 
 	return result[0]
 }
 
-func BuildUnifiedLiteralFix(msg extract.Message, ctx Context) string {
-	lit, ok := msg.Expr.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING || msg.StaticText == "" {
+func BuildUnifiedLiteralFix(pass *analysis.Pass, msg extract.Message, ctx Context) string {
+	_, original, ok := fixTargetStringLiteral(pass, msg.Expr)
+	if !ok || original == "" {
 		return ""
 	}
-	original := msg.StaticText
 	fixed := original
 
 	if ctx.Config.Autofix.EnglishOnly && ctx.Config.Rules.EnglishOnly && !isEnglishOnly(fixed) && ctx.Translator != nil {
@@ -365,10 +380,10 @@ func BuildUnifiedLiteralFix(msg extract.Message, ctx Context) string {
 			fixed = translated
 		}
 	}
-	// String literal is always treated as stable message (no sensitive mode for pure text).
-	allowKVSeparators := false
-	if ctx.Config.Autofix.NoSpecials && ctx.Config.Rules.NoSpecials && hasDisallowedRune(fixed, msg.IsFormat, allowKVSeparators) {
-		fixed = sanitizeMessage(fixed, msg.IsFormat, allowKVSeparators)
+	allowKVSeparators := !msg.IsConst
+	allowFormatVerb := msg.IsFormat || isSprintfExpr(pass, msg.Expr)
+	if ctx.Config.Autofix.NoSpecials && ctx.Config.Rules.NoSpecials && hasDisallowedRune(fixed, allowFormatVerb, allowKVSeparators) {
+		fixed = sanitizeMessage(fixed, allowFormatVerb, allowKVSeparators)
 	}
 	if ctx.Config.Autofix.LowercaseStart && ctx.Config.Rules.LowercaseStart && !startsWithLowercase(fixed) {
 		r, _ := utf8.DecodeRuneInString(fixed)
@@ -406,9 +421,38 @@ func shouldAttachFixForNoSpecials(pass *analysis.Pass, msg extract.Message, ctx 
 	if shouldAttachFixForLowercase(msg, ctx) || shouldAttachFixForEnglish(msg, ctx) {
 		return false
 	}
-	allowKVSeparators := isSensitiveDynamicMessage(pass, msg, ctx.Matcher)
+	allowKVSeparators := !msg.IsConst
 	allowFormatVerb := msg.IsFormat || isSprintfExpr(pass, msg.Expr)
 	return hasDisallowedRune(msg.StaticText, allowFormatVerb, allowKVSeparators)
+}
+
+func fixTargetStringLiteral(pass *analysis.Pass, expr ast.Expr) (*ast.BasicLit, string, bool) {
+	switch n := expr.(type) {
+	case *ast.BasicLit:
+		if n.Kind != token.STRING {
+			return nil, "", false
+		}
+		value, err := strconv.Unquote(n.Value)
+		if err != nil {
+			return nil, "", false
+		}
+		return n, value, true
+	case *ast.BinaryExpr:
+		if n.Op != token.ADD {
+			return nil, "", false
+		}
+		if lit, value, ok := fixTargetStringLiteral(pass, n.X); ok {
+			return lit, value, true
+		}
+		return fixTargetStringLiteral(pass, n.Y)
+	case *ast.CallExpr:
+		if pass != nil && extract.LooksLikeSprintf(pass, n) && len(n.Args) > 0 {
+			return fixTargetStringLiteral(pass, n.Args[0])
+		}
+		return nil, "", false
+	default:
+		return nil, "", false
+	}
 }
 
 func isSensitiveDynamicMessage(pass *analysis.Pass, msg extract.Message, matcher SensitiveMatcher) bool {

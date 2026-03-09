@@ -88,7 +88,7 @@ func TestSanitizeMessage(t *testing.T) {
 		want            string
 	}{
 		{name: "remove punctuation and separators in stable", message: "warning: something went wrong...", allowKV: false, want: "warning something went wrong"},
-		{name: "keep separators in sensitive", message: "token: abc_value", allowKV: true, want: "token: abc_value"},
+		{name: "keep separators in dynamic", message: "token: abc_value", allowKV: true, want: "token: abcvalue"},
 		{name: "keep format verb", message: "failed %s", allowFormatVerb: true, want: "failed %s"},
 	}
 	for _, tt := range tests {
@@ -117,6 +117,9 @@ func TestMatcherRegexAndKeywords(t *testing.T) {
 	}
 	if !isSensitiveWord("mySecretKeyValue", m) {
 		t.Fatalf("expected regex to match identifier")
+	}
+	if isSensitiveWord("merchantPin", m) {
+		t.Fatalf("did not expect unrelated identifier to be sensitive")
 	}
 }
 
