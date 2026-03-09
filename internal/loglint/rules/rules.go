@@ -60,8 +60,9 @@ func (r NoSpecialsRule) Check(pass *analysis.Pass, msg extract.Message, ctx Cont
 	if !ctx.Config.Rules.NoSpecials || msg.StaticText == "" {
 		return
 	}
+	allowKVSeparators := containsSensitiveKeyWithSeparator(strings.ToLower(msg.StaticText), ctx.Matcher)
 	withFix := ctx.Config.Autofix.NoSpecials && shouldAttachFixForNoSpecials(msg, ctx)
-	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, msg.IsFormat, withFix, ctx.UnifiedFix)
+	checkNoSpecialsOrEmoji(pass, msg.Expr, msg.StaticText, msg.IsFormat, allowKVSeparators, withFix, ctx.UnifiedFix)
 }
 
 func (r SensitiveRule) Check(pass *analysis.Pass, msg extract.Message, ctx Context) {
@@ -69,8 +70,7 @@ func (r SensitiveRule) Check(pass *analysis.Pass, msg extract.Message, ctx Conte
 		return
 	}
 	if msg.IsConst {
-		withFix := ctx.Config.Autofix.SensitiveData && shouldAttachFixForSensitive(msg, ctx)
-		checkSensitiveStatic(pass, msg.Expr, msg.StaticText, ctx.Matcher, withFix, ctx.UnifiedFix)
+		checkSensitiveStatic(pass, msg.Expr, msg.StaticText, ctx.Matcher)
 		return
 	}
 	checkSensitiveDynamic(pass, msg.Expr, ctx.Matcher)
@@ -160,19 +160,19 @@ func checkEnglishOnlyWithFix(pass *analysis.Pass, expr ast.Expr, message string,
 	pass.Report(diagnostic)
 }
 
-func checkNoSpecialsOrEmoji(pass *analysis.Pass, expr ast.Expr, message string, allowFormatVerb bool, withSuggestedFix bool, unifiedFix string) {
-	diagnostic, found := findNoSpecialsOrEmojiViolation(expr, message, allowFormatVerb)
+func checkNoSpecialsOrEmoji(pass *analysis.Pass, expr ast.Expr, message string, allowFormatVerb bool, allowKVSeparators bool, withSuggestedFix bool, unifiedFix string) {
+	diagnostic, found := findNoSpecialsOrEmojiViolation(expr, message, allowFormatVerb, allowKVSeparators)
 	if !found {
 		return
 	}
 	if withSuggestedFix {
-		applyNoSpecialsOrEmojiFix(&diagnostic, expr, message, allowFormatVerb, unifiedFix)
+		applyNoSpecialsOrEmojiFix(&diagnostic, expr, message, allowFormatVerb, allowKVSeparators, unifiedFix)
 	}
 	pass.Report(diagnostic)
 }
 
-func findNoSpecialsOrEmojiViolation(expr ast.Expr, message string, allowFormatVerb bool) (analysis.Diagnostic, bool) {
-	if !hasDisallowedRune(message, allowFormatVerb) {
+func findNoSpecialsOrEmojiViolation(expr ast.Expr, message string, allowFormatVerb bool, allowKVSeparators bool) (analysis.Diagnostic, bool) {
+	if !hasDisallowedRune(message, allowFormatVerb, allowKVSeparators) {
 		return analysis.Diagnostic{}, false
 	}
 	return analysis.Diagnostic{
@@ -182,12 +182,12 @@ func findNoSpecialsOrEmojiViolation(expr ast.Expr, message string, allowFormatVe
 	}, true
 }
 
-func applyNoSpecialsOrEmojiFix(diagnostic *analysis.Diagnostic, expr ast.Expr, message string, allowFormatVerb bool, unifiedFix string) {
+func applyNoSpecialsOrEmojiFix(diagnostic *analysis.Diagnostic, expr ast.Expr, message string, allowFormatVerb bool, allowKVSeparators bool, unifiedFix string) {
 	lit, ok := expr.(*ast.BasicLit)
 	if !ok || lit.Kind != token.STRING {
 		return
 	}
-	sanitized := sanitizeMessage(message, allowFormatVerb)
+	sanitized := sanitizeMessage(message, allowFormatVerb, allowKVSeparators)
 	if unifiedFix != "" {
 		sanitized = unifiedFix
 	}
@@ -204,14 +204,14 @@ func applyNoSpecialsOrEmojiFix(diagnostic *analysis.Diagnostic, expr ast.Expr, m
 	}}
 }
 
-func hasDisallowedRune(message string, allowFormatVerb bool) bool {
+func hasDisallowedRune(message string, allowFormatVerb bool, allowKVSeparators bool) bool {
 	runes := []rune(message)
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
 			continue
 		}
-		if r == ':' || r == '=' || r == '_' {
+		if allowKVSeparators && (r == ':' || r == '=' || r == '_') {
 			continue
 		}
 		if allowFormatVerb && r == '%' && i+1 < len(runes) {
@@ -223,13 +223,13 @@ func hasDisallowedRune(message string, allowFormatVerb bool) bool {
 	return false
 }
 
-func sanitizeMessage(message string, allowFormatVerb bool) string {
+func sanitizeMessage(message string, allowFormatVerb bool, allowKVSeparators bool) string {
 	var b strings.Builder
 	lastSpace := false
 	runes := []rune(message)
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == ':' || r == '=' || r == '_' {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || (allowKVSeparators && (r == ':' || r == '=' || r == '_')) {
 			b.WriteRune(r)
 			lastSpace = false
 			continue
@@ -249,7 +249,7 @@ func sanitizeMessage(message string, allowFormatVerb bool) string {
 	return strings.TrimSpace(b.String())
 }
 
-func checkSensitiveStatic(pass *analysis.Pass, expr ast.Expr, message string, matcher SensitiveMatcher, withSuggestedFix bool, unifiedFix string) {
+func checkSensitiveStatic(pass *analysis.Pass, expr ast.Expr, message string, matcher SensitiveMatcher) {
 	if !containsSensitiveKeyWithSeparator(strings.ToLower(message), matcher) {
 		return
 	}
@@ -257,22 +257,6 @@ func checkSensitiveStatic(pass *analysis.Pass, expr ast.Expr, message string, ma
 		Pos:     expr.Pos(),
 		End:     expr.End(),
 		Message: "log message may expose sensitive data",
-	}
-	if withSuggestedFix {
-		if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-			replacement := "sensitive data redacted"
-			if unifiedFix != "" {
-				replacement = unifiedFix
-			}
-			diagnostic.SuggestedFixes = []analysis.SuggestedFix{{
-				Message: "replace with neutral message",
-				TextEdits: []analysis.TextEdit{{
-					Pos:     lit.Pos(),
-					End:     lit.End(),
-					NewText: []byte(strconv.Quote(replacement)),
-				}},
-			}}
-		}
 	}
 	pass.Report(diagnostic)
 }
@@ -392,11 +376,9 @@ func BuildUnifiedLiteralFix(msg extract.Message, ctx Context) string {
 			fixed = translated
 		}
 	}
-	if ctx.Config.Autofix.SensitiveData && ctx.Config.Rules.SensitiveData && containsSensitiveKeyWithSeparator(strings.ToLower(fixed), ctx.Matcher) {
-		fixed = "sensitive data redacted"
-	}
-	if ctx.Config.Autofix.NoSpecials && ctx.Config.Rules.NoSpecials && hasDisallowedRune(fixed, msg.IsFormat) {
-		fixed = sanitizeMessage(fixed, msg.IsFormat)
+	allowKVSeparators := containsSensitiveKeyWithSeparator(strings.ToLower(fixed), ctx.Matcher)
+	if ctx.Config.Autofix.NoSpecials && ctx.Config.Rules.NoSpecials && hasDisallowedRune(fixed, msg.IsFormat, allowKVSeparators) {
+		fixed = sanitizeMessage(fixed, msg.IsFormat, allowKVSeparators)
 	}
 	if ctx.Config.Autofix.LowercaseStart && ctx.Config.Rules.LowercaseStart && !startsWithLowercase(fixed) {
 		r, _ := utf8.DecodeRuneInString(fixed)
@@ -434,17 +416,8 @@ func shouldAttachFixForNoSpecials(msg extract.Message, ctx Context) bool {
 	if shouldAttachFixForLowercase(msg, ctx) || shouldAttachFixForEnglish(msg, ctx) {
 		return false
 	}
-	return hasDisallowedRune(msg.StaticText, msg.IsFormat)
-}
-
-func shouldAttachFixForSensitive(msg extract.Message, ctx Context) bool {
-	if !ctx.Config.Rules.SensitiveData || !msg.IsConst {
-		return false
-	}
-	if shouldAttachFixForLowercase(msg, ctx) || shouldAttachFixForEnglish(msg, ctx) || shouldAttachFixForNoSpecials(msg, ctx) {
-		return false
-	}
-	return containsSensitiveKeyWithSeparator(strings.ToLower(msg.StaticText), ctx.Matcher)
+	allowKVSeparators := containsSensitiveKeyWithSeparator(strings.ToLower(msg.StaticText), ctx.Matcher)
+	return hasDisallowedRune(msg.StaticText, msg.IsFormat, allowKVSeparators)
 }
 
 func startsWithLowercase(message string) bool {

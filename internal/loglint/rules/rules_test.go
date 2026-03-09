@@ -58,18 +58,20 @@ func TestHasDisallowedRune(t *testing.T) {
 		name            string
 		message         string
 		allowFormatVerb bool
+		allowKV         bool
 		want            bool
 	}{
 		{name: "plain", message: "server started", want: false},
 		{name: "emoji", message: "server started 🚀", want: true},
 		{name: "punctuation", message: "failed!!!", want: true},
-		{name: "allowed separators", message: "token: abc", want: false},
+		{name: "separator disallowed in stable", message: "token: abc", allowKV: false, want: true},
+		{name: "separator allowed in sensitive", message: "token: abc", allowKV: true, want: false},
 		{name: "format without allow", message: "failed %s", allowFormatVerb: false, want: true},
 		{name: "format with allow", message: "failed %s", allowFormatVerb: true, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := hasDisallowedRune(tt.message, tt.allowFormatVerb)
+			got := hasDisallowedRune(tt.message, tt.allowFormatVerb, tt.allowKV)
 			if got != tt.want {
 				t.Fatalf("hasDisallowedRune(%q) = %v, want %v", tt.message, got, tt.want)
 			}
@@ -82,15 +84,16 @@ func TestSanitizeMessage(t *testing.T) {
 		name            string
 		message         string
 		allowFormatVerb bool
+		allowKV         bool
 		want            string
 	}{
-		{name: "remove punctuation", message: "warning: something went wrong...", want: "warning: something went wrong"},
-		{name: "keep separators", message: "token: abc_value", want: "token: abc_value"},
+		{name: "remove punctuation and separators in stable", message: "warning: something went wrong...", allowKV: false, want: "warning something went wrong"},
+		{name: "keep separators in sensitive", message: "token: abc_value", allowKV: true, want: "token: abc_value"},
 		{name: "keep format verb", message: "failed %s", allowFormatVerb: true, want: "failed %s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeMessage(tt.message, tt.allowFormatVerb)
+			got := sanitizeMessage(tt.message, tt.allowFormatVerb, tt.allowKV)
 			if got != tt.want {
 				t.Fatalf("sanitizeMessage(%q) = %q, want %q", tt.message, got, tt.want)
 			}

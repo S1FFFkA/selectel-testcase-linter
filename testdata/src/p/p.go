@@ -31,14 +31,14 @@ func zapCases(apiKey string, token string) {
 	logger.Warn("запуск сервера")                              // want "log message should be in English only"
 	logger.Debug("api_key=" + apiKey)                          // want "log message may expose sensitive data"
 	logger.Info("server started")                              // ok
-	sugar.Infof("Failed to connect: %s", token)                // want "log message should start with a lowercase letter"
-	sugar.Infof("failed to connect: %s", token)                // ok
-	sugar.Infof("ошибка: %s", token)                           // want "log message should be in English only"
+	sugar.Infof("Failed to connect: %s", token)                // want "log message should start with a lowercase letter" "log message should not contain special characters or emoji"
+	sugar.Infof("failed to connect: %s", token)                // want "log message should not contain special characters or emoji"
+	sugar.Infof("ошибка: %s", token)                           // want "log message should be in English only" "log message should not contain special characters or emoji"
 	sugar.Infow("token: "+token, "request_id", "abc")          // want "log message may expose sensitive data"
 	sugar.Debugw("api request completed", "request_id", "123") // ok
 }
 
 func customSensitiveCases(merchantPin string, otpCode string) {
-	slog.Info("merchant_pin: " + merchantPin)
-	slog.Info("otp code: " + otpCode)
+	slog.Info("merchant_pin: " + merchantPin) // want "log message should not contain special characters or emoji"
+	slog.Info("otp code: " + otpCode)         // want "log message should not contain special characters or emoji"
 }
