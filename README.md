@@ -16,15 +16,6 @@
 - `log/slog`
 - `go.uber.org/zap` (`Logger` и часть API `SugaredLogger`)
 
-## Структура проекта
-
-- `analyzer` — точка входа анализатора на `go/analysis`;
-- `internal/loglint/extract` — извлечение message-аргумента из вызовов `slog`/`zap`;
-- `internal/loglint/rules` — все правила (`lowercase`, `english`, `no_specials`, `sensitive`) и общий интерфейс;
-- `internal/loglint/config` — загрузка и применение настроек плагина;
-- `cmd/loglint` — standalone CLI-раннер (`singlechecker`);
-- `plugin` — экспорт анализатора для интеграции как module plugin;
-- `testdata` — единая директория тестовых Go-пакетов (`analysistest` + integration).
 
 ## Требования
 
@@ -36,11 +27,7 @@
 go mod tidy
 ```
 
-## Локальный запуск линтера
 
-```bash
-go run ./cmd/loglint ./...
-```
 
 ## Запуск тестов
 
@@ -81,39 +68,109 @@ version: v2.4.0
 plugins:
   - module: github.com/S1FFFkA/selectel-testcase-linter
     import: github.com/S1FFFkA/selectel-testcase-linter/plugin
-
-linters:
-  enable:
-    - logslinter
+    version: v1.1.0
 ```
 
 Пример plugin settings (кастомные правила и свои sensitive-слова):
 
 ```yaml
-plugins:
-  - module: github.com/S1FFFkA/selectel-testcase-linter
-    import: github.com/S1FFFkA/selectel-testcase-linter/plugin
-    settings:
-      rules:
-        starts_with_lower: true
-        english_only: true
-        no_emoji_or_special: true
-        sensitive_data:
-          state: true
-          words:
-            - "password"
-            - "token"
-            - "merchant_pin"
-      autofix:
-        starts_with_lower: true
-        english_only: true
-        no_emoji_or_special: true
-        sensitive_data: true
+version: "2"
+
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
+linters:
+  default: none
+  enable:
+    - logslinter
+  settings:
+    custom:
+      logslinter:
+        type: module
+        description: "Linter for log messages."
+        settings:
+          rules:
+            starts_with_lower: true
+            english_only: true
+            no_emoji_or_special: true
+            sensitive_data:
+              state: true
+              words:
+                - password
+                - token
+                - api_key
+                - secret
+          autofix:
+            starts_with_lower: true
+            english_only: true
+            no_emoji_or_special: true
+            sensitive_data: true
 ```
 
 ## Нюансы текущей реализации
 
-- Правила 1-3 применяются к строковым сообщениям, вычислимым как compile-time string constant.
-- Проверка чувствительных данных работает и для динамических выражений (`+`, `fmt.Sprintf`, идентификаторы с именами вроде `password`, `token`, `api_key`).
-- Добавлены `SuggestedFixes`: понижение регистра первой буквы, перевод неанглийского текста на английский (через `go_translate`), удаление спецсимволов в литералах, замена статического чувствительного сообщения на нейтральное.
-- Чтобы добавить своё "правило-слово" для sensitive, добавьте его в `rules.sensitive_data.words` (только слово, без `:` и `=`).
+logslinter сейчас работает по таким правилам:
+
+starts_with_lower
+Лог должен начинаться с маленькой буквы.
+
+Автофикс: делает первую букву строчной.
+
+english_only
+В сообщении не должно быть не-латинских букв (кириллица и т.п.).
+
+Автофикс: переводит текст на английский (если переводчик доступен).
+
+no_emoji_or_special
+Запрещены эмодзи и спецсимволы.
+
+Разница:
+static (чистый текст): : и = запрещены;
+
+dynamic (есть переменная/выражение): : и = разрешены.
+
+Автофикс: удаляет запрещенные символы.
+
+sensitive_data
+Срабатывает только для dynamic сообщений (где есть переменная/поле) и если найден sensitive keyword/regex.
+
+Для static строк не срабатывает.
+
+Автофикса нет (только репорт).
+
+Дополнительно:
+Sensitive keywords берутся из конфига (rules.sensitive_data.words), если не заданы — используются дефолтные.
+
+Автофикс не трогает sensitive-значения и не подменяет их на sensitive data redacted.
+
+Для одной проблемной строки в одном прогоне применяется один согласованный фикс (без конфликтов правок).
+
+# Быстрый старт
+
+В корне проекта где хотите подключить линтр для логов создайте два файла 
+
+## .custom-gcl.yml
+Его можно взять выше в документации
+
+
+
+## .golangci.yml
+
+В нем можно прописать свои треггер-слова 
+
+Отключить/Выключить какие-либо проверки
+
+Отключить/Выключить какие-либо автоисправления 
+
+Пример данного файла можно найти также в документации.
+
+## В командой строке в корне файла пропишите команду
+```golangci-lint custom  ```
+
+Требуется немного подождать пока все зависимости подтянуться и после создания exe файла у вас в директории вы сможете использовать две команды 
+
+```.\custom-gcl.exe run -c .golangci.yml ./...      ``` - проверка всех логов на наши правила
+
+```.\custom-gcl.exe run -c .golangci.yml --fix ./...```- также проверяет все логи на наши правила + автоисправляет их , если включены соответсвующие поля в yml файле (рекомендуется прогонять несколько раз , т.к линтер может испраивть лишь одну ошибку за раз)
+
